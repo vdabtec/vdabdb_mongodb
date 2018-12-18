@@ -1,0 +1,59 @@
+apply plugin: 'java'
+
+version = ''
+sourceCompatibility = 1.7
+targetCompatibility = 1.7
+
+dependencies {
+    compile files('build/vdab/VDABCore.jar' )
+	compile files('libs/bson-3.8.0.jar' )
+	compile files('libs/mongodb-driver-3.8.0.jar' )
+	compile files('libs/mongodb-driver-core-3.8.0.jar' )
+ }
+//Get dependencies from Maven central repository
+repositories {
+    mavenCentral()
+}
+
+// Fetch a fresh VDABCore from vdabtec.com
+task getVDABCore(type: GetFile) {
+    sourceUrl = 'http://vdabtec.com/vdab/products/VDABCore.jar'
+    target = file('build/vdab/VDABCore.jar')
+}
+class GetFile extends DefaultTask {
+    @Input
+    String sourceUrl
+
+    @OutputFile
+    File target
+
+    @TaskAction
+    void download() {
+       ant.get(src: sourceUrl, dest: target)
+    }
+}
+tasks.compileJava.dependsOn([getVDABCore])
+
+task vdabPackage(dependsOn: [build]){
+		doLast {
+			def jarFiles = file('./libs').listFiles()
+			jarFiles.each {File nextFile ->
+			println ">>>>> Included JAR= $nextFile.name"
+			
+		}
+		copy {
+			from 'pkg'
+			into 'build/vdab/pkg'
+		}
+
+		copy {
+			from 'libs'
+			from 'build/libs'
+			into 'build/vdab/pkg/ext'
+		}
+		
+		ant.zip(destfile: 'PKG_DB-MongoDB.zip'){
+			fileset (dir: 'build/vdab/pkg')
+		}
+	}
+}
