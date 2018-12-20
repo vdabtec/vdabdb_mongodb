@@ -49,7 +49,7 @@ task vdabPackage(dependsOn: [build]){
 		copy {
 			from 'libs'
 			from 'build/libs'
-			into 'build/vdab/pkg/ext'
+			into 'build/vdab/pkg/ext/db'
 		}
 		
 		ant.zip(destfile: 'PKG_DB-MongoDB.zip'){
