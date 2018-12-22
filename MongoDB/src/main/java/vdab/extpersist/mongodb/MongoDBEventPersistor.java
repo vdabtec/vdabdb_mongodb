@@ -23,14 +23,16 @@ import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoDatabase;
 import com.mongodb.client.model.Filters;
 
-public class MongoDBEventPersistor extends EventPersistor_A{
+public class MongoDBEventPersistor extends EventPersistor_A {
 	private static AnalysisDataDef[] s_DBForEvent_ddefs = new AnalysisDataDef[]{ 
 		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"User")
-		.setRequired(),
+		.setStandard().setEditOrder(10),
 		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"Password")
-		.setAsPassword().setRequired().setEditOrder(11),
-		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"User")
-		.setRequired().setEditOrder(12)
+		.setAsPassword().setStandard().setEditOrder(11),
+		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"Server")
+		.setRequired().setEditOrder(12),
+		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"Port")
+		.setRequired().setEditOrder(13)
 	};
 	// https://www.mongodb.com/blog/post/getting-started-with-mongodb-and-java-part-i
 	private static String COLLECTION_NAME = "EVENT";
