@@ -1,9 +1,13 @@
 package vdab.extpersist.mongodb;
 
 
+import java.sql.ResultSet;
 import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
+import org.bson.BSONObject;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 
@@ -14,19 +18,28 @@ import com.lcrc.af.AnalysisData;
 import com.lcrc.af.AnalysisDataDef;
 import com.lcrc.af.AnalysisEvent;
 import com.lcrc.af.AnalysisObject;
+import com.lcrc.af.constants.GeoUnits;
 import com.lcrc.af.constants.TimeUnit;
 import com.lcrc.af.datatypes.AFEventDataInfo;
 import com.lcrc.af.datatypes.AFEventSearchInfo;
+import com.mongodb.BasicDBObject;
+import com.mongodb.Block;
+import com.mongodb.Cursor;
+import com.mongodb.DBObject;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientURI;
+import com.mongodb.client.AggregateIterable;
 import com.mongodb.client.DistinctIterable;
 import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
+import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
+import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
 import com.mongodb.client.result.DeleteResult;
 
 public class MongoDBEventPersistor extends EventPersistor_A {
+	// ADD a ddef for attribute DatabaseName.
 	private static AnalysisDataDef[] s_DBForEvent_ddefs = new AnalysisDataDef[]{ 
 		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"User")
 		.setStandard().setEditOrder(10),
@@ -35,12 +48,15 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"Server")
 		.setRequired().setEditOrder(12),
 		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"Port")
-		.setRequired().setEditOrder(13)
+		.setRequired().setEditOrder(13),
+		AnalysisObject.getClassAttributeDataDef(MongoDBEventPersistor.class,"DatabaseName")
+		.setRequired().setEditOrder(14)
 	};
 	// https://www.mongodb.com/blog/post/getting-started-with-mongodb-and-java-part-i
 	private static String COLLECTION_NAME = "EVENT";
 	private static String DBNAME = "VDAB";
-
+ 
+	private String c_DatabaseName = DBNAME;
 	private MongoClient c_MongoClient;
 	private MongoClientURI c_MongoURI;
 	private String c_MongoURIasString;
@@ -81,6 +97,13 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 	public void set_Port(Integer port){
 		c_Port = port;
 	}
+	
+	public String get_DatabaseName(){
+		return c_DatabaseName;
+	}
+	public void set_DatabaseName(String database){
+		c_DatabaseName = database;
+	}
 	public String get_MongoURI(){
 		return c_MongoURIasString;
 	}
@@ -101,17 +124,70 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		DeleteResult result = c_MongoCollection.deleteMany(Filters.exists("Path"));
 	}
 	@Override
-	public void purgeEvents(){
+	public void purgeEvents(Integer maxAge){
 	//TODO - Implement
 	// SQL ... DELETE FROM AF_EVENT WHERE SAVETILL < "+System.currentTimeMillis();
-
+		DeleteResult result = c_MongoCollection.deleteMany(Filters.lt("SaveTill" , System.currentTimeMillis()));
+		setWarning("result: " + result.toString());
+		
 	}
+	@SuppressWarnings("unchecked")
 	@Override
 	public AFEventDataInfo[] getAllEventInfo(){
 		ArrayList<AFEventDataInfo> l = new ArrayList<AFEventDataInfo>();
 		// HACKALERT - Temporary need to get actual minimum and maximum time.
 		//	EQUIVALENT SQL "SELECT SOURCE_CONTAINER, PATH, LABEL, MIN(TIMESTAMP),MAX(TIMESTAMP)FROM AF_EVENT GROUP BY SOURCE_CONTAINER, PATH, LABEL");
-
+	
+		Document group = new Document("$group",
+				new Document("_id",
+						new Document("label","$Label")
+					.append("path","$Path")
+					.append("source","$SourceContainer")
+				).append("minTimestamp", new Document("$min","$Timestamp")
+				).append("maxTimestamp", new Document("$max","$Timestamp")));
+				
+		AggregateIterable<Document> documents = c_MongoCollection.aggregate(Arrays.asList(
+				
+				group
+				//Aggregates.group(new Document("_id",new Document("label","$Label").append("path","$Path").append("source","$SourceContainer")))
+				
+				));
+		
+		long t1;
+		long t0;
+		
+		String label;
+		String path;
+		String source;
+		
+		Document next;
+		Document item;
+		
+		MongoCursor<Document> iterator = documents.iterator();
+		while (iterator.hasNext()){
+			next = iterator.next();
+			item =  (Document) next.get("_id");
+			
+			label = item.getString("label");
+			path = item.getString("path");
+			source = item.getString("source");
+			
+			t0 = next.getLong("minTimestamp").longValue();
+			t1 = next.getLong("maxTimestamp").longValue();
+			
+			System.out.println( "label: "+label+" path: "+path+" source: "+source+" t0: "+t0+" t1: "+t1); 
+			
+			AFEventDataInfo evInfo = new AFEventDataInfo(source, path, label, t0, t1);
+			l.add(evInfo);
+		}
+		
+		
+		
+		/*
+		 * 
+		 */
+		
+		/*
 		long t1 = System.currentTimeMillis();
 		long t0 = t1 - TimeUnit.DAY*1000L*365L; // Year?
 		DistinctIterable<String> sources = c_MongoCollection.distinct("SourceContainer", String.class);
@@ -124,14 +200,24 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 					l.add(evInfo);
 					}
 			}
-		}
+		}*/
 		return l.toArray(new AFEventDataInfo[l.size()]);
 	}
+	public AnalysisEvent[] retrieveCurrentEvents(AFEventSearchInfo sinfo){
+		long now = System.currentTimeMillis();
+		sinfo.setYoungest(now);
+		sinfo.setOldest(now-36000000L);
+
+		return retrieveEvents(sinfo, Integer.valueOf(500), false);
+	}
+
 	@Override
 	public AnalysisEvent[] retrieveEvents(AFEventSearchInfo sInfo, Integer maxEvents, boolean allowDups){
 		ArrayList<AnalysisEvent> l = new ArrayList<AnalysisEvent>();
 
 		Bson retrieveFilter = getBsonFilter(sInfo);
+		if (retrieveFilter == null)
+			return new AnalysisEvent[0];
 
 		try { 
 			FindIterable<Document> docs = c_MongoCollection.find(retrieveFilter);
@@ -149,7 +235,9 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 				}
 				if (noEvents > 0 ){			
 					AnalysisData ad =  EventUtility.retrievePayload(get_PayloadType(), doc.getString("Data"));
-					l.add(new AnalysisEvent(nextTime, path, ad));	
+					AnalysisEvent ev = new AnalysisEvent(nextTime, path, ad);
+					setLocationForEvent(ev, doc);
+					l.add(ev);	
 					noEvents--;
 					lastTime = nextTime;
 				}
@@ -214,12 +302,23 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		doc.put("SourceIP", ev.getOriginatingIP());
 		doc.put("Path",ev.getPath());
 		doc.put("Label",ev.getLabel());
+		doc.put("Latitude", ev.getLatitude());
+		doc.put("Longitude", ev.getLongitude());	
+		doc.put("Altitude", ev.getAltitude());	
 		doc.put("Data",EventUtility.formatPayload(get_PayloadType(), ev.getAnalysisData()));
 		c_MongoCollection.insertOne(doc);
 	}
 	private void initMongoURI() throws Exception {
+		
 		StringBuilder sb = new StringBuilder();
 		sb.append("mongodb://");
+		
+		/*if (c_User != null && c_User.length() > 0){
+			sb.append(c_User);
+			sb.append(":");
+			sb.append(c_Password);
+			sb.append("@");
+		}*/
 		sb.append(c_Server);
 		sb.append(":");
 		sb.append(c_Port);
@@ -227,11 +326,35 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		c_MongoURI = new MongoClientURI(c_MongoURIasString);
 	}
 	private void initMongoClient() throws Exception {
+		// Check if User exists, add username and password to the opening.
+	
+		
 		c_MongoClient = new MongoClient(c_MongoURI);
-		c_MongoDatabase = c_MongoClient.getDatabase(DBNAME);
+		// Database (name) should be an attribute defaulting to VDAB
+		c_MongoDatabase = c_MongoClient.getDatabase(c_DatabaseName);
 		c_MongoCollection = c_MongoDatabase.getCollection(COLLECTION_NAME);
 	}
 	private Bson getBsonFilter(AFEventSearchInfo sInfo){
-		return (Filters.and(Filters.eq("Path",sInfo.getPath()),Filters.gt("Timestamp", sInfo.getOldest()),Filters.lte("Timestamp", sInfo.getYoungest())));
+		
+		if (sInfo.getPath() != null)
+			return (Filters.and(Filters.eq("Path",sInfo.getPath()),Filters.gt("Timestamp", sInfo.getOldest()),Filters.lte("Timestamp", sInfo.getYoungest())));
+		if (sInfo.getLabel() != null)
+			return (Filters.and(Filters.eq("Label",sInfo.getLabel()),Filters.gt("Timestamp", sInfo.getOldest()),Filters.lte("Timestamp", sInfo.getYoungest())));
+		return null;
+	}
+	private void setLocationForEvent (AnalysisEvent ev, Document doc){
+
+		try {
+			Double lat  = doc.getDouble("Latitude");
+			Double lng  = doc.getDouble("Longitude");
+			Double alt  = doc.getDouble("Altitude");
+			if (lat != null && lng != null ){
+				ev.setLocation(Integer.valueOf(GeoUnits.DEGREES_NE_METERS),lat,lng, alt); 
+			}
+
+		}
+		catch (Exception e) {
+			setError("Unable to set event location e>"+e);
+		}		
 	}
 }
