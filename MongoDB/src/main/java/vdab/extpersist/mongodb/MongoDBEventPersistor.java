@@ -4,10 +4,8 @@ package vdab.extpersist.mongodb;
 import java.sql.ResultSet;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.LinkedHashMap;
 import java.util.concurrent.ConcurrentHashMap;
 
-import org.bson.BSONObject;
 import org.bson.Document;
 import org.bson.conversions.Bson;
 
@@ -19,23 +17,18 @@ import com.lcrc.af.AnalysisDataDef;
 import com.lcrc.af.AnalysisEvent;
 import com.lcrc.af.AnalysisObject;
 import com.lcrc.af.constants.GeoUnits;
-import com.lcrc.af.constants.TimeUnit;
 import com.lcrc.af.datatypes.AFEventDataInfo;
 import com.lcrc.af.datatypes.AFEventSearchInfo;
-import com.mongodb.BasicDBObject;
-import com.mongodb.Block;
-import com.mongodb.Cursor;
-import com.mongodb.DBObject;
+import com.lcrc.af.util.ControlDataBuffer;
 import com.mongodb.MongoClient;
 import com.mongodb.MongoClientURI;
 import com.mongodb.client.AggregateIterable;
-import com.mongodb.client.DistinctIterable;
 import com.mongodb.client.FindIterable;
 import com.mongodb.client.MongoCollection;
 import com.mongodb.client.MongoCursor;
 import com.mongodb.client.MongoDatabase;
-import com.mongodb.client.model.Aggregates;
 import com.mongodb.client.model.Filters;
+import com.mongodb.client.model.Sorts;
 import com.mongodb.client.result.DeleteResult;
 
 public class MongoDBEventPersistor extends EventPersistor_A {
@@ -203,14 +196,45 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		}*/
 		return l.toArray(new AFEventDataInfo[l.size()]);
 	}
-	public AnalysisEvent[] retrieveCurrentEvents(AFEventSearchInfo sinfo){
-		long now = System.currentTimeMillis();
-		sinfo.setYoungest(now);
-		sinfo.setOldest(now-36000000L);
+	protected AnalysisEvent[] retrieveNearestEvents0(AFEventSearchInfo sinfo){
+		ArrayList<AnalysisEvent> l = new ArrayList<AnalysisEvent>();
 
-		return retrieveEvents(sinfo, Integer.valueOf(500), false);
-	}
+		Bson retrieveFilter = getBsonFilter(sinfo);
+		if (retrieveFilter == null)
+			return new AnalysisEvent[0];
 
+		ControlDataBuffer foundPaths = new ControlDataBuffer("DBEventPersistor_foundPaths");
+
+		try { 
+			FindIterable<Document> docs = c_MongoCollection.find(retrieveFilter).sort(Sorts.descending("Timestamp") );
+			String path = null;
+			long leastDif = Long.MAX_VALUE;
+			for (Document doc : docs) {
+				long nextTime  = doc.getLong("Timestamp").longValue();
+				path =doc.getString("Path");	
+				String source= doc.getString("SourceContainer");
+				String ip = doc.getString("SourceIP");		// REMOTE IP
+				String key = getEventKey(path, doc);
+				if (!foundPaths.isSet(key)){	
+					AnalysisData ad =  EventUtility.retrievePayload(get_PayloadType(), doc.getString("Data"));
+					AnalysisEvent ev = new AnalysisEvent(nextTime, path, ad);
+					// Set the origin which is always necessary
+					ev.setOrigins(source, ip);
+					// Set the location if that data is available.
+					setLocationForEvent(ev, doc);
+					l.add(ev);	
+					foundPaths.set(key);
+				}
+			}
+		}
+		catch (Exception e){
+			setError("Failed to retrieve events e>"+e);
+		}
+		finally {
+
+		}
+		return l.toArray(new AnalysisEvent[l.size()]);
+		}
 	@Override
 	public AnalysisEvent[] retrieveEvents(AFEventSearchInfo sInfo, Integer maxEvents, boolean allowDups){
 		ArrayList<AnalysisEvent> l = new ArrayList<AnalysisEvent>();
@@ -220,7 +244,12 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 			return new AnalysisEvent[0];
 
 		try { 
-			FindIterable<Document> docs = c_MongoCollection.find(retrieveFilter);
+			FindIterable<Document> docs = null;
+			if (sInfo.getAscending())
+				docs = c_MongoCollection.find(retrieveFilter).sort(Sorts.ascending ("Timestamp") );
+			else
+				docs = c_MongoCollection.find(retrieveFilter).sort(Sorts.descending ("Timestamp") );
+					
 			int noEvents = (int) maxEvents;	
 			long lastTime = 0L;
 			int dupsFound = 0;
@@ -333,6 +362,20 @@ public class MongoDBEventPersistor extends EventPersistor_A {
 		// Database (name) should be an attribute defaulting to VDAB
 		c_MongoDatabase = c_MongoClient.getDatabase(c_DatabaseName);
 		c_MongoCollection = c_MongoDatabase.getCollection(COLLECTION_NAME);
+	}
+	private static String getEventKey(String path, Document doc){
+		StringBuilder sb = new StringBuilder(path);
+		try {
+			if (doc.getDouble("Latitude") != null)
+				sb.append(doc.getDouble("Latitude"));
+		} 
+		catch (Exception e) {}
+		try {
+			if (doc.getDouble("Longitude")!= null)
+				sb.append(doc.getDouble("Longitude"));
+		} 
+		catch (Exception e) {}
+		return sb.toString();
 	}
 	private Bson getBsonFilter(AFEventSearchInfo sInfo){
 		
